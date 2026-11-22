@@ -5,11 +5,12 @@ import uvicorn
 
 app = FastAPI(title="ARIS // NEXUS")
 VERIFY_TOKEN = "ARIS_NEXUS_2026"
-SECRET_PIN = "2026"  # Apna secret PIN yahan set karo
+SECRET_PIN = "2026"
 YOUTUBE_DECOY_URL = "https://www.youtube.com/results?search_query=class+11+physics+thermodynamics+one+shot"
 
 connected_clients: list[WebSocket] = []
 event_log: list[dict] = []
+event_counter = 0
 
 HUD_HTML = """
 <!DOCTYPE html>
@@ -28,7 +29,6 @@ HUD_HTML = """
     .container { width: 100%; max-width: 720px; }
     .hidden { display: none !important; }
 
-    /* Decoy / Lock Screen (Physics Notes Cover) */
     .decoy-box {
       background: #0b1120; border: 1px solid #1e293b; border-radius: 18px;
       padding: 24px 20px; margin-top: 12px;
@@ -50,7 +50,6 @@ HUD_HTML = """
       background: #38bdf8; color: #04070d; font-weight: 800; font-size: 14px; cursor: pointer;
     }
 
-    /* Main Responsive NEXUS HUD */
     header {
       display: flex; justify-content: space-between; align-items: center;
       padding: 14px 18px; background: #0b1120; border: 1px solid #1e293b;
@@ -73,7 +72,6 @@ HUD_HTML = """
     .protocol-text { font-size: clamp(20px, 5vw, 26px); font-weight: 800; color: #ffffff; letter-spacing: 0.5px; }
     .sub-text { font-size: 12px; color: #94a3b8; margin-top: 6px; letter-spacing: 1px; }
 
-    /* Mobile + Desktop Adaptive Grid Controls */
     .controls {
       display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 16px;
     }
@@ -106,7 +104,6 @@ HUD_HTML = """
 </head>
 <body>
   <div class="container">
-    <!-- Decoy Physics Cover Screen -->
     <div id="decoyScreen" class="decoy-box">
       <h2>Class 11 Physics — Thermodynamics Revision</h2>
       <p style="color:#94a3b8; font-size:14px;">First Law of Thermodynamics & Carnot Cycle Efficiency:</p>
@@ -118,11 +115,10 @@ HUD_HTML = """
       </div>
     </div>
 
-    <!-- Real NEXUS Cross-Device HUD -->
     <div id="nexusScreen" class="hidden">
       <header>
         <div class="title">◈ ARIS // NEXUS</div>
-        <div class="badge" id="connStatus">SYNCING...</div>
+        <div class="badge" id="connStatus">● ONLINE</div>
       </header>
 
       <div class="alert-banner" id="banner">
@@ -153,76 +149,111 @@ HUD_HTML = """
     const decoyScreen = document.getElementById("decoyScreen");
     const nexusScreen = document.getElementById("nexusScreen");
     const pinInput = document.getElementById("pinInput");
-
-    function unlockHud() {
-      if (pinInput.value === SECRET_PIN) {
-        decoyScreen.classList.add("hidden");
-        nexusScreen.classList.remove("hidden");
-        pinInput.value = "";
-      } else {
-        pinInput.value = "";
-      }
-    }
-
-    // PANIC PROTOCOL: Closes Insta on Desktop Bridge + Redirects to YouTube cleanly
-    function triggerPanicYouTube() {
-      fetch("http://127.0.0.1:48912/panic", { method: "POST" }).catch(() => {});
-      window.location.replace(YOUTUBE_URL);
-    }
-
-    // Desktop ESC key & Enter PIN
-    document.addEventListener("keydown", (e) => {
-      if (e.key === "Escape") triggerPanicYouTube();
-      if (e.key === "Enter" && !decoyScreen.classList.contains("hidden")) unlockHud();
-    });
-
-    // Mobile Two-Finger Instant Panic Gesture
-    document.addEventListener("touchstart", (e) => {
-      if (e.touches.length >= 2 && !nexusScreen.classList.contains("hidden")) {
-        triggerPanicYouTube();
-      }
-    });
-
-    // Auto-lock to Physics Notes if app/tab minimized
-    document.addEventListener("visibilitychange", () => {
-      if (document.hidden) {
-        nexusScreen.classList.add("hidden");
-        decoyScreen.classList.remove("hidden");
-      }
-    });
-
-    const proto = location.protocol === "https:" ? "wss:" : "ws:";
-    const ws = new WebSocket(`${proto}//${location.host}/ws/nexus`);
     const statusEl = document.getElementById("connStatus");
     const banner = document.getElementById("banner");
     const textEl = document.getElementById("protocolText");
     const subEl = document.getElementById("protocolSub");
     const logList = document.getElementById("logList");
 
-    ws.onopen = () => { statusEl.textContent = "● ONLINE"; };
-    ws.onclose = () => { statusEl.textContent = "OFFLINE"; statusEl.style.color = "#f87171"; };
+    let lastSeenCount = -1;
 
-    ws.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      if (data.type === "HISTORY") {
-        logList.innerHTML = "";
-        data.logs.forEach(addLogRow);
-        return;
+    function setBadgeOnline(online) {
+      if (online) {
+        statusEl.textContent = "● ONLINE";
+        statusEl.style.color = "#34d399";
+        statusEl.style.background = "rgba(16, 185, 129, 0.15)";
+      } else {
+        statusEl.textContent = "● RETRYING";
+        statusEl.style.color = "#fbbf24";
+        statusEl.style.background = "rgba(251, 191, 36, 0.15)";
       }
-      textEl.textContent = data.message;
-      subEl.textContent = `ENCRYPTED SIGNAL • ${data.time}`;
+    }
+
+    function unlockHud() {
+      if (pinInput.value === SECRET_PIN) {
+        decoyScreen.classList.add("hidden");
+        nexusScreen.classList.remove("hidden");
+        pinInput.value = "";
+        syncState();
+      } else {
+        pinInput.value = "";
+      }
+    }
+
+    function triggerAlertUI(item) {
+      textEl.textContent = item.message;
+      subEl.textContent = `ENCRYPTED SIGNAL • ${item.time}`;
       banner.classList.add("active");
       setTimeout(() => banner.classList.remove("active"), 4000);
-      addLogRow(data);
 
-      // Mobile subtle vibration
       if (navigator.vibrate) navigator.vibrate([120, 60, 120]);
-
-      // Discreet OS Notification (Zero Insta/Sender leak)
       if (Notification.permission === "granted") {
-        new Notification("System Telemetry", { body: data.message });
+        new Notification("System Telemetry", { body: item.message });
       }
-    };
+    }
+
+    async function syncState() {
+      try {
+        const res = await fetch("/api/status", { cache: "no-store" });
+        if (!res.ok) throw new Error("Sync failed");
+        const data = await res.json();
+        setBadgeOnline(true);
+
+        if (lastSeenCount === -1) {
+          lastSeenCount = data.count;
+          logList.innerHTML = "";
+          data.logs.forEach(addLogRow);
+        } else if (data.count > lastSeenCount) {
+          lastSeenCount = data.count;
+          logList.innerHTML = "";
+          data.logs.forEach(addLogRow);
+          if (data.logs.length > 0) {
+            triggerAlertUI(data.logs[data.logs.length - 1]);
+          }
+        }
+      } catch (err) {
+        setBadgeOnline(false);
+      }
+    }
+
+    setInterval(syncState, 2000);
+    syncState();
+
+    function connectSocket() {
+      try {
+        const proto = location.protocol === "https:" ? "wss:" : "ws:";
+        const ws = new WebSocket(`${proto}//${location.host}/ws/nexus`);
+        ws.onopen = () => setBadgeOnline(true);
+        ws.onmessage = () => syncState();
+        ws.onclose = () => setTimeout(connectSocket, 4000);
+      } catch (e) {}
+    }
+    connectSocket();
+
+    function triggerPanicYouTube() {
+      fetch("http://127.0.0.1:48912/panic", { method: "POST" }).catch(() => {});
+      window.location.replace(YOUTUBE_URL);
+    }
+
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") triggerPanicYouTube();
+      if (e.key === "Enter" && !decoyScreen.classList.contains("hidden")) unlockHud();
+    });
+
+    document.addEventListener("touchstart", (e) => {
+      if (e.touches.length >= 2 && !nexusScreen.classList.contains("hidden")) {
+        triggerPanicYouTube();
+      }
+    });
+
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) {
+        nexusScreen.classList.add("hidden");
+        decoyScreen.classList.remove("hidden");
+      } else {
+        syncState();
+      }
+    });
 
     function addLogRow(item) {
       const div = document.createElement("div");
@@ -236,7 +267,7 @@ HUD_HTML = """
     }
 
     function testTrigger() {
-      fetch("/bridge/trigger", { method: "POST" });
+      fetch("/bridge/trigger", { method: "POST" }).then(() => syncState());
     }
   </script>
 </body>
@@ -244,6 +275,8 @@ HUD_HTML = """
 """.replace("__SECRET_PIN__", SECRET_PIN).replace("__YOUTUBE_URL__", YOUTUBE_DECOY_URL)
 
 async def dispatch_protocol(source: str):
+    global event_counter
+    event_counter += 1
     now = datetime.datetime.now().strftime("%I:%M:%S %p")
     payload = {
         "type": "ALERT",
@@ -264,6 +297,10 @@ async def dispatch_protocol(source: str):
 @app.get("/", response_class=HTMLResponse)
 async def hud_interface():
     return HUD_HTML
+
+@app.get("/api/status")
+async def get_status():
+    return {"status": "online", "count": event_counter, "logs": event_log}
 
 @app.get("/insta-webhook")
 async def verify_insta(
@@ -291,7 +328,6 @@ async def bridge_trigger():
 async def nexus_ws(ws: WebSocket):
     await ws.accept()
     connected_clients.append(ws)
-    await ws.send_json({"type": "HISTORY", "logs": event_log})
     try:
         while True:
             await ws.receive_text()
